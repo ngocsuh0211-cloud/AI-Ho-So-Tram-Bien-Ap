@@ -65,13 +65,36 @@ app.post('/api/training/upload',upload.array('files',20),async(req,res)=>{
     const results=[];
     for(const f of req.files){
       try{
+        // Upload the source file, then attach it to the vector store without waiting
+        // for indexing to finish. Waiting here can exceed the Vercel request duration.
         const up=await c.files.create({file:fs.createReadStream(f.path),purpose:'assistants'});
-        await c.vectorStores.files.createAndPoll(store(),{file_id:up.id});
-        results.push({name:f.originalname,fileId:up.id,status:'Đã đưa vào kho kiến thức AI'});
+        const vsFile=await c.vectorStores.files.create(store(),{file_id:up.id});
+        results.push({
+          name:f.originalname,
+          fileId:up.id,
+          vectorStoreFileId:vsFile.id,
+          status:vsFile.status||'in_progress'
+        });
       }finally{fs.rmSync(f.path,{force:true});}
     }
-    res.json({ok:true,results});
-  }catch(e){for(const f of req.files||[])fs.rmSync(f.path,{force:true});res.status(500).json({error:e.message});}
+    res.status(202).json({ok:true,results,message:'Đã nhận tài liệu. Hệ thống đang lập chỉ mục trong kho kiến thức.'});
+  }catch(e){
+    for(const f of req.files||[])fs.rmSync(f.path,{force:true});
+    console.error('training upload error',e);
+    res.status(500).json({error:e.message});
+  }
+});
+
+app.get('/api/training/status/:fileId',async(req,res)=>{
+  const c=client(); if(!c) return res.status(503).json({error:'Chưa cấu hình OPENAI_API_KEY trên máy chủ.'});
+  if(!store()) return res.status(503).json({error:'Chưa cấu hình OPENAI_VECTOR_STORE_ID trên máy chủ.'});
+  try{
+    const f=await c.vectorStores.files.retrieve(store(),req.params.fileId);
+    res.json({ok:true,id:f.id,status:f.status,error:f.last_error||null});
+  }catch(e){
+    console.error('training status error',e);
+    res.status(500).json({error:e.message});
+  }
 });
 
 app.get(/.*/, (req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
