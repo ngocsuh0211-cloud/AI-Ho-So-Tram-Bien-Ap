@@ -5,7 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import OpenAI, { toStreamingFile } from 'openai';
-import { handleUpload, get, del } from '@vercel/blob';
+import { get, del } from '@vercel/blob';
+import { handleUpload } from '@vercel/blob/client';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
