@@ -18,7 +18,7 @@ async function uploadTraining(){const i=document.getElementById('trainFiles'),o=
   const put=await fetch(pd.presignedUrl,{method:'PUT',headers:{'Content-Type':f.type||'application/octet-stream'},body:f});
   if(!put.ok)throw Error('Không tải được '+f.name+' lên Vercel Blob. HTTP '+put.status);
   o.textContent='Đã tải '+f.name+' lên kho tạm. Đang chuyển vào kho kiến thức AI...';
-  const r=await fetch('/api/training/from-blob',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pathname:pd.pathname,name:f.name,contentType:f.type})});
+  const r=await fetch('/api/training/from-blob',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pathname:pd.pathname,name:f.name,contentType:f.type,getUrl:pd.getUrl})});
   let d={};try{d=await r.json();}catch{throw Error('Máy chủ không trả JSON khi chuyển tài liệu vào AI.');}
   if(!r.ok&&r.status!==202)throw Error(d.error||'Không chuyển được tài liệu vào AI');
   let done=false;for(let n=0;n<60&&!done;n++){await new Promise(resolve=>setTimeout(resolve,2000));const sr=await fetch('/api/training/status/'+encodeURIComponent(d.vectorStoreFileId));const sd=await sr.json();if(!sr.ok)throw Error(sd.error||'Không kiểm tra được trạng thái tài liệu');if(sd.status==='completed'){o.textContent='✓ '+f.name+': Đã đưa vào kho kiến thức AI';done=true;}else if(sd.status==='failed'){throw Error(f.name+': '+(sd.error?.message||sd.error||'OpenAI không lập chỉ mục được tài liệu'));}else{o.textContent='⏳ '+f.name+': đang lập chỉ mục ('+(n+1)+'/60)...';}}if(!done)throw Error(f.name+': quá thời gian chờ lập chỉ mục. Có thể kiểm tra lại sau.');
