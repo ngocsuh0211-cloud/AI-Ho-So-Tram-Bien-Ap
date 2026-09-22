@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import OpenAI, { toStreamingFile } from 'openai';
-import { get, del } from '@vercel/blob';
+import { get, del, issueSignedToken, presignUrl } from '@vercel/blob';
 import { handleUpload } from '@vercel/blob/client';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -19,7 +19,7 @@ app.use(express.static(path.join(__dirname,'public')));
 
 function client(){ return process.env.OPENAI_API_KEY ? new OpenAI({apiKey:process.env.OPENAI_API_KEY}) : null; }
 function store(){ return process.env.OPENAI_VECTOR_STORE_ID?.trim() || ''; }
-function blobConfigured(){ return !!process.env.BLOB_READ_WRITE_TOKEN; }
+function blobConfigured(){ return !!(process.env.BLOB_STORE_ID || process.env.BLOB_READ_WRITE_TOKEN); }
 
 app.get('/api/status', async (req,res)=>{
   const configured=!!process.env.OPENAI_API_KEY, id=store();
@@ -60,8 +60,25 @@ Nguyên tắc bắt buộc:
   }catch(e){console.error('chat error',e);res.status(500).json({error:e.message});}
 });
 
+app.post('/api/blob/presign-upload', async (req,res)=>{
+  if(!blobConfigured()) return res.status(503).json({error:'Chưa kết nối Vercel Blob với project.'});
+  try{
+    const {name,contentType,size}=req.body||{};
+    if(!name) return res.status(400).json({error:'Thiếu tên file.'});
+    if(Number(size||0)>50*1024*1024) return res.status(400).json({error:'File vượt quá giới hạn 50 MB.'});
+    const safeName=String(name).replace(/[^a-zA-Z0-9._-]+/g,'_');
+    const pathname=`training/${Date.now()}-${Math.random().toString(36).slice(2,10)}-${safeName}`;
+    const token=await issueSignedToken({operations:['put'],maximumSizeInBytes:50*1024*1024});
+    const {presignedUrl}=await presignUrl(token,{pathname,operation:'put',validUntil:Date.now()+15*60*1000});
+    res.json({ok:true,pathname,presignedUrl,contentType:contentType||'application/octet-stream'});
+  }catch(e){
+    console.error('blob presign error',e);
+    res.status(500).json({error:e.message});
+  }
+});
+
 app.post('/api/blob/upload', async (req,res)=>{
-  if(!blobConfigured()) return res.status(503).json({error:'Chưa có BLOB_READ_WRITE_TOKEN. Hãy tạo Vercel Blob Store cho project.'});
+  if(!blobConfigured()) return res.status(503).json({error:'Chưa kết nối Vercel Blob với project.'});
   try{
     const jsonResponse=await handleUpload({
       request:req,
@@ -98,7 +115,7 @@ app.post('/api/training/from-blob',async(req,res)=>{
   const c=client();
   if(!c) return res.status(503).json({error:'Chưa cấu hình OPENAI_API_KEY trên máy chủ.'});
   if(!store()) return res.status(503).json({error:'Chưa cấu hình OPENAI_VECTOR_STORE_ID trên máy chủ.'});
-  if(!blobConfigured()) return res.status(503).json({error:'Chưa có BLOB_READ_WRITE_TOKEN trên máy chủ.'});
+  if(!blobConfigured()) return res.status(503).json({error:'Chưa kết nối Vercel Blob với project.'});
   const {pathname,name,contentType}=req.body||{};
   if(!pathname||!name) return res.status(400).json({error:'Thiếu pathname hoặc tên file.'});
   try{
