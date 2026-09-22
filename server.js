@@ -4,8 +4,8 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import OpenAI, { toStreamingFile } from 'openai';
-import { get, del, issueSignedToken, presignUrl } from '@vercel/blob';
+import OpenAI, { toFile, toStreamingFile } from 'openai';
+import { get, del, put, issueSignedToken, presignUrl } from '@vercel/blob';
 import { handleUpload } from '@vercel/blob/client';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -66,7 +66,7 @@ app.post('/api/blob/presign-upload', async (req,res)=>{
   try{
     const {name,contentType,size}=req.body||{};
     if(!name) return res.status(400).json({error:'Thiếu tên file.'});
-    if(Number(size||0)>500*1024*1024) return res.status(400).json({error:'File vượt quá giới hạn 50 MB.'});
+    if(Number(size||0)>500*1024*1024) return res.status(400).json({error:'File vượt quá giới hạn 500 MB.'});
     const safeName=String(name).replace(/[^a-zA-Z0-9._-]+/g,'_');
     const pathname=`training/${Date.now()}-${Math.random().toString(36).slice(2,10)}-${safeName}`;
     const putToken=await issueSignedToken({pathname,operations:['put'],maximumSizeInBytes:500*1024*1024});
@@ -142,8 +142,58 @@ app.post('/api/training/from-blob',async(req,res)=>{
       detectedType=contentType||blobResult.blob.contentType||detectedType;
     }
     const streamFile=toStreamingFile(sourceStream,name,{type:detectedType});
+    // Keep the uploaded PDF in OpenAI so the Responses API can inspect the
+    // rendered pages (including scanned/image-only pages) independently of
+    // File Search indexing.
     const up=await c.files.create({file:streamFile,purpose:'assistants'});
     const vsFile=await c.vectorStores.files.create(store(),{file_id:up.id});
+
+    if((detectedType||'').toLowerCase()==='application/pdf' || /\\.pdf$/i.test(name)){
+      const ocr=await c.responses.create({
+        model:MODEL,
+        background:true,
+        metadata:{
+          source_filename:name,
+          source_file_id:up.id,
+          source_vector_store_file_id:vsFile.id,
+          vector_store_id:store()
+        },
+        instructions:
+          'Bạn là bộ phận OCR và trích xuất hồ sơ kỹ thuật. ' +
+          'Đọc trực tiếp toàn bộ PDF, kể cả các trang scan/hình ảnh. ' +
+          'Không tóm tắt và không suy diễn. Trích xuất tối đa nội dung có thể đọc được, ' +
+          'giữ nguyên tiếng Việt, số liệu, ngày tháng, mã hiệu, tên người/tổ chức, tiêu đề, ' +
+          'bảng biểu và các mục của hồ sơ. Mỗi trang phải bắt đầu bằng [TRANG N] để giữ vị trí. ' +
+          'Nếu một trang không đọc được, ghi [TRANG N - KHÔNG ĐỌC ĐƯỢC]. ' +
+          'Không tự điền phần bị mờ hoặc thiếu.',
+        input:[{
+          role:'user',
+          content:[
+            {type:'input_file',file_id:up.id,detail:'high'},
+            {type:'input_text',text:
+              'Hãy OCR toàn bộ tài liệu này. Ưu tiên độ chính xác của chữ, số, ký hiệu kỹ thuật và bảng biểu. ' +
+              'Xuất văn bản liên tục theo thứ tự trang để hệ thống lưu làm lớp dữ liệu có thể tìm kiếm.'
+            }
+          ]
+        }],
+        max_output_tokens:120000
+      });
+
+      // The source is now safely in OpenAI; remove the temporary Blob copy.
+      try{ await del(pathname); }catch(cleanErr){ console.warn('blob cleanup warning',cleanErr.message); }
+
+      return res.status(202).json({
+        ok:true,
+        name,
+        fileId:up.id,
+        vectorStoreFileId:vsFile.id,
+        ocrResponseId:ocr.id,
+        ocrStatus:ocr.status||'queued',
+        needsOcr:true,
+        message:'Đã nhận PDF. AI đang đọc OCR toàn bộ trang scan; sau đó hệ thống sẽ đưa phần văn bản vào kho tìm kiếm.'
+      });
+    }
+
     res.status(202).json({
       ok:true,
       name,
@@ -152,10 +202,115 @@ app.post('/api/training/from-blob',async(req,res)=>{
       status:vsFile.status||'in_progress',
       message:'Đã chuyển tài liệu vào OpenAI. Hệ thống đang lập chỉ mục.'
     });
-    // The source is now safely in OpenAI; remove the temporary Blob copy.
     try{ await del(pathname); }catch(cleanErr){ console.warn('blob cleanup warning',cleanErr.message); }
   }catch(e){
     console.error('training from blob error',e);
+    res.status(500).json({error:e.message});
+  }
+});
+
+// OCR status/finalization for scanned PDFs.
+app.get('/api/training/ocr-status/:responseId',async(req,res)=>{
+  const c=client();
+  if(!c) return res.status(503).json({error:'Chưa cấu hình OPENAI_API_KEY trên máy chủ.'});
+  if(!store()) return res.status(503).json({error:'Chưa cấu hình OPENAI_VECTOR_STORE_ID trên máy chủ.'});
+  const responseId=String(req.params.responseId||'').trim();
+  if(!responseId) return res.status(400).json({error:'Thiếu mã OCR.'});
+
+  try{
+    const r=await c.responses.retrieve(responseId);
+
+    if(r.status==='queued' || r.status==='in_progress'){
+      return res.json({ok:true,status:r.status,message:'AI đang đọc các trang scan...'});
+    }
+    if(r.status==='failed' || r.status==='cancelled'){
+      return res.status(500).json({ok:false,status:r.status,error:r.error?.message||'OCR không hoàn tất.'});
+    }
+    if(r.status!=='completed'){
+      return res.json({ok:true,status:r.status,message:'Đang xử lý OCR...'});
+    }
+
+    if(r.incomplete_details?.reason==='max_output_tokens'){
+      return res.status(500).json({
+        ok:false,
+        status:'incomplete',
+        error:'OCR đã chạm giới hạn đầu ra. Hồ sơ quá dài để trích xuất toàn bộ trong một lượt.'
+      });
+    }
+
+    const metadata=r.metadata||{};
+    const name=metadata.source_filename||'tai-lieu.pdf';
+    const sourceFileId=metadata.source_file_id||null;
+    const sourceVectorStoreFileId=metadata.source_vector_store_file_id||null;
+    const markerPath=`training/ocr-state/${responseId}.json`;
+
+    // Prevent duplicate OCR text files if the browser polls more than once
+    // or the request is retried.
+    let markerData=null;
+    try{
+      const markerBlob=await get(markerPath,{access:'private',useCache:false});
+      if(markerBlob?.statusCode===200 && markerBlob.stream){
+        const chunks=[];
+        for await(const chunk of markerBlob.stream) chunks.push(Buffer.from(chunk));
+        markerData=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      }
+    }catch{}
+
+    if(!markerData){
+      const text=String(r.output_text||'').trim();
+      if(!text) return res.status(500).json({ok:false,status:'failed',error:'OCR hoàn tất nhưng không có văn bản trả về.'});
+
+      const ocrFilename=`OCR__${name.replace(/[^a-zA-Z0-9._-]+/g,'_')}.txt`;
+      const ocrFile=await toFile(Buffer.from(text,'utf8'),ocrFilename,{type:'text/plain'});
+      const textUp=await c.files.create({file:ocrFile,purpose:'assistants'});
+      const textVs=await c.vectorStores.files.create(store(),{file_id:textUp.id});
+      markerData={
+        ok:true,
+        status:'indexing',
+        name,
+        sourceFileId,
+        sourceVectorStoreFileId,
+        ocrFileId:textUp.id,
+        vectorStoreFileId:textVs.id
+      };
+      try{
+        await put(markerPath,JSON.stringify(markerData),{
+          access:'private',
+          contentType:'application/json',
+          addRandomSuffix:false,
+          overwrite:true
+        });
+      }catch(markerErr){
+        console.warn('ocr marker write warning',markerErr.message);
+      }
+    }
+
+    const indexed=await c.vectorStores.files.retrieve(markerData.vectorStoreFileId,{vector_store_id:store()});
+    if(indexed.status==='completed'){
+      return res.json({
+        ok:true,
+        status:'completed',
+        name:markerData.name,
+        vectorStoreFileId:markerData.vectorStoreFileId,
+        message:'Đã OCR và đưa nội dung đọc được vào kho kiến thức AI.'
+      });
+    }
+    if(indexed.status==='failed'){
+      return res.status(500).json({
+        ok:false,
+        status:'failed',
+        error:indexed.last_error?.message||'Không lập chỉ mục được văn bản OCR.'
+      });
+    }
+    return res.json({
+      ok:true,
+      status:'indexing',
+      name:markerData.name,
+      vectorStoreFileId:markerData.vectorStoreFileId,
+      message:'OCR đã xong; hệ thống đang lập chỉ mục văn bản vào kho kiến thức.'
+    });
+  }catch(e){
+    console.error('ocr status error',e);
     res.status(500).json({error:e.message});
   }
 });
