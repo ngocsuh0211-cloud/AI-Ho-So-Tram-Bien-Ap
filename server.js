@@ -68,9 +68,11 @@ app.post('/api/blob/presign-upload', async (req,res)=>{
     if(Number(size||0)>500*1024*1024) return res.status(400).json({error:'File vượt quá giới hạn 50 MB.'});
     const safeName=String(name).replace(/[^a-zA-Z0-9._-]+/g,'_');
     const pathname=`training/${Date.now()}-${Math.random().toString(36).slice(2,10)}-${safeName}`;
-    const token=await issueSignedToken({operations:['put'],maximumSizeInBytes:500*1024*1024});
-    const {presignedUrl}=await presignUrl(token,{pathname,operation:'put',validUntil:Date.now()+15*60*1000});
-    res.json({ok:true,pathname,presignedUrl,contentType:contentType||'application/octet-stream'});
+    const putToken=await issueSignedToken({pathname,operations:['put'],maximumSizeInBytes:500*1024*1024});
+    const getToken=await issueSignedToken({pathname,operations:['get']});
+    const {presignedUrl}=await presignUrl(putToken,{pathname,operation:'put',validUntil:Date.now()+15*60*1000});
+    const {presignedUrl:getUrl}=await presignUrl(getToken,{pathname,operation:'get',validUntil:Date.now()+15*60*1000,useCache:false});
+    res.json({ok:true,pathname,presignedUrl,getUrl,contentType:contentType||'application/octet-stream'});
   }catch(e){
     console.error('blob presign error',e);
     res.status(500).json({error:e.message});
@@ -116,12 +118,14 @@ app.post('/api/training/from-blob',async(req,res)=>{
   if(!c) return res.status(503).json({error:'Chưa cấu hình OPENAI_API_KEY trên máy chủ.'});
   if(!store()) return res.status(503).json({error:'Chưa cấu hình OPENAI_VECTOR_STORE_ID trên máy chủ.'});
   if(!blobConfigured()) return res.status(503).json({error:'Chưa kết nối Vercel Blob với project.'});
-  const {pathname,name,contentType}=req.body||{};
-  if(!pathname||!name) return res.status(400).json({error:'Thiếu pathname hoặc tên file.'});
+  const {pathname,name,contentType,getUrl}=req.body||{};
+  if(!pathname||!name||!getUrl) return res.status(400).json({error:'Thiếu thông tin tài liệu tạm trong Blob.'});
   try{
-    const blob=await get(pathname,{access:'private'});
-    if(!blob || blob.statusCode!==200) return res.status(404).json({error:'Không tìm thấy tài liệu tạm trong Blob.'});
-    const streamFile=toStreamingFile(blob.stream,name,{type:contentType||blob.blob?.contentType||'application/octet-stream'});
+    const u=new URL(getUrl);
+    if(!u.hostname.endsWith('.blob.vercel-storage.com')) return res.status(400).json({error:'Đường dẫn Blob không hợp lệ.'});
+    const blobResponse=await fetch(getUrl,{cache:'no-store'});
+    if(!blobResponse.ok || !blobResponse.body) return res.status(404).json({error:'Không đọc được tài liệu tạm trong Blob. HTTP '+blobResponse.status});
+    const streamFile=toStreamingFile(blobResponse.body,name,{type:contentType||blobResponse.headers.get('content-type')||'application/octet-stream'});
     const up=await c.files.create({file:streamFile,purpose:'assistants'});
     const vsFile=await c.vectorStores.files.create(store(),{file_id:up.id});
     res.status(202).json({
