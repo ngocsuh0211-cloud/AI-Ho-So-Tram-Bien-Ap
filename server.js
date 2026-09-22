@@ -12,7 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
 const MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-luna';
-const upload = multer({ dest:'/tmp/ai-ho-so-uploads', limits:{fileSize:50*1024*1024} });
+const upload = multer({ dest:'/tmp/ai-ho-so-uploads', limits:{fileSize:500*1024*1024} });
 
 app.use(express.json({limit:'2mb'}));
 app.use(express.static(path.join(__dirname,'public')));
@@ -65,10 +65,10 @@ app.post('/api/blob/presign-upload', async (req,res)=>{
   try{
     const {name,contentType,size}=req.body||{};
     if(!name) return res.status(400).json({error:'Thiếu tên file.'});
-    if(Number(size||0)>50*1024*1024) return res.status(400).json({error:'File vượt quá giới hạn 50 MB.'});
+    if(Number(size||0)>500*1024*1024) return res.status(400).json({error:'File vượt quá giới hạn 50 MB.'});
     const safeName=String(name).replace(/[^a-zA-Z0-9._-]+/g,'_');
     const pathname=`training/${Date.now()}-${Math.random().toString(36).slice(2,10)}-${safeName}`;
-    const token=await issueSignedToken({operations:['put'],maximumSizeInBytes:50*1024*1024});
+    const token=await issueSignedToken({operations:['put'],maximumSizeInBytes:500*1024*1024});
     const {presignedUrl}=await presignUrl(token,{pathname,operation:'put',validUntil:Date.now()+15*60*1000});
     res.json({ok:true,pathname,presignedUrl,contentType:contentType||'application/octet-stream'});
   }catch(e){
@@ -96,7 +96,7 @@ app.post('/api/blob/upload', async (req,res)=>{
           'application/vnd.openxmlformats-officedocument.presentationml.presentation',
           'application/vnd.ms-powerpoint'
         ],
-        maximumSizeInBytes:50*1024*1024,
+        maximumSizeInBytes:500*1024*1024,
         addRandomSuffix:true,
         tokenPayload:JSON.stringify({originalPathname:pathname,clientPayload:clientPayload||null,multipart:!!multipart})
       }),
