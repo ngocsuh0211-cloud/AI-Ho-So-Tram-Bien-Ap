@@ -11,7 +11,8 @@ import { handleUpload } from '@vercel/blob/client';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
-const MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-luna';
+const requestedModel = process.env.OPENAI_MODEL?.trim();
+const MODEL = ['gpt-5.6-luna','gpt-5.6-terra','gpt-5.6-sol'].includes(requestedModel) ? requestedModel : 'gpt-5.6-luna';
 const upload = multer({ dest:'/tmp/ai-ho-so-uploads', limits:{fileSize:500*1024*1024} });
 
 app.use(express.json({limit:'2mb'}));
