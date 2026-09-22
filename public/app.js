@@ -10,17 +10,58 @@ async function status(){try{const r=await fetch('/api/status'),d=await r.json();
 function bind(){document.querySelectorAll('.projectBtn').forEach(b=>b.onclick=()=>{document.querySelectorAll('.projectBtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');currentProject=b.dataset.project;});}
 async function send(){const i=document.getElementById('msg');if(!i.value.trim())return;const q=i.value.trim(),m=document.getElementById('messages');m.innerHTML+=`<div class="bubble me">${esc(q)}</div><div class="bubble ai" id="typing">Đang xử lý...</div>`;i.value='';try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:q,project:currentProject,history})});const d=await r.json();document.getElementById('typing')?.remove();if(!r.ok)throw Error(d.error||'Lỗi API');m.innerHTML+=`<div class="bubble ai"><b>AI Hồ sơ</b><br>${esc(d.text).replace(/\\n/g,'<br>')}</div>`;history.push({role:'user',content:q},{role:'assistant',content:d.text});}catch(e){document.getElementById('typing')?.remove();m.innerHTML+=`<div class="bubble ai"><b>Lỗi:</b> ${esc(e.message)}</div>`;}}
 async function setupVectorStore(){const o=document.getElementById('storeResult');o.textContent='Đang khởi tạo...';try{const r=await fetch('/api/setup/vector-store',{method:'POST'}),d=await r.json();if(!r.ok)throw Error(d.error||'Không tạo được kho');o.textContent='Đã tạo kho. ID: '+d.vectorStoreId+' — hãy thêm ID này vào Vercel với tên OPENAI_VECTOR_STORE_ID rồi Redeploy.';}catch(e){o.textContent='Lỗi: '+e.message;}}
-async function uploadTraining(){const i=document.getElementById('trainFiles'),o=document.getElementById('uploadResult');if(!i.files.length){o.textContent='Hãy chọn file.';return;}const files=Array.from(i.files);o.textContent='Đang chuẩn bị tải trực tiếp lên Vercel Blob...';for(const f of files){try{
-  const pr=await fetch('/api/blob/presign-upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:f.name,contentType:f.type,size:f.size})});
-  let pd={};try{pd=await pr.json();}catch{throw Error('Máy chủ không trả JSON khi tạo đường tải file.');}
-  if(!pr.ok)throw Error(pd.error||'Không tạo được đường tải file');
-  o.textContent='Đang tải '+f.name+' lên kho tạm...';
-  const put=await fetch(pd.presignedUrl,{method:'PUT',headers:{'Content-Type':f.type||'application/octet-stream'},body:f});
-  if(!put.ok)throw Error('Không tải được '+f.name+' lên Vercel Blob. HTTP '+put.status);
-  o.textContent='Đã tải '+f.name+' lên kho tạm. Đang chuyển vào kho kiến thức AI...';
-  const r=await fetch('/api/training/from-blob',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pathname:pd.pathname,name:f.name,contentType:f.type,getUrl:pd.getUrl})});
-  let d={};try{d=await r.json();}catch{throw Error('Máy chủ không trả JSON khi chuyển tài liệu vào AI.');}
-  if(!r.ok&&r.status!==202)throw Error(d.error||'Không chuyển được tài liệu vào AI');
-  let done=false;for(let n=0;n<60&&!done;n++){await new Promise(resolve=>setTimeout(resolve,2000));const sr=await fetch('/api/training/status/'+encodeURIComponent(d.vectorStoreFileId));const sd=await sr.json();if(!sr.ok)throw Error(sd.error||'Không kiểm tra được trạng thái tài liệu');if(sd.status==='completed'){o.textContent='✓ '+f.name+': Đã đưa vào kho kiến thức AI';done=true;}else if(sd.status==='failed'){throw Error(f.name+': '+(sd.error?.message||sd.error||'OpenAI không lập chỉ mục được tài liệu'));}else{o.textContent='⏳ '+f.name+': đang lập chỉ mục ('+(n+1)+'/60)...';}}if(!done)throw Error(f.name+': quá thời gian chờ lập chỉ mục. Có thể kiểm tra lại sau.');
-}catch(e){o.textContent='Lỗi: '+e.message;return;}}}
+let blobClientPromise;
+async function getBlobUpload(){
+  if(!blobClientPromise){
+    blobClientPromise=import('https://esm.unpkg.com/@vercel/blob@2.8.0/client')
+      .then(m=>m.upload)
+      .catch(async()=>{const m=await import('https://esm.sh/@vercel/blob@2.8.0/client');return m.upload;});
+  }
+  return blobClientPromise;
+}
+async function uploadTraining(){
+  const i=document.getElementById('trainFiles'),o=document.getElementById('uploadResult');
+  if(!i.files.length){o.textContent='Hãy chọn file.';return;}
+  const files=Array.from(i.files);
+  let upload;
+  try{upload=await getBlobUpload();}catch(e){
+    o.textContent='Lỗi: Không tải được thư viện upload Vercel Blob. '+(e?.message||e);
+    return;
+  }
+  for(const f of files){
+    try{
+      if(f.size>500*1024*1024) throw Error('File vượt quá giới hạn 500 MB.');
+      o.textContent='Đang tải '+f.name+' trực tiếp lên Vercel Blob...';
+      const blob=await upload('training/'+Date.now()+'-'+f.name.replace(/[^a-zA-Z0-9._-]+/g,'_'),f,{
+        access:'private',
+        handleUploadUrl:'/api/blob/upload',
+        contentType:f.type||'application/octet-stream',
+        multipart:f.size>5*1024*1024,
+        onUploadProgress:(p)=>{o.textContent='Đang tải '+f.name+' lên Blob: '+Math.round(p.percentage||0)+'%';}
+      });
+      o.textContent='✓ Đã tải '+f.name+' lên Blob. Đang chuyển vào kho kiến thức AI...';
+      const r=await fetch('/api/training/from-blob',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({pathname:blob.pathname,name:f.name,contentType:f.type||blob.contentType})
+      });
+      let d={};try{d=await r.json();}catch{throw Error('Máy chủ không trả JSON khi chuyển tài liệu vào AI.');}
+      if(!r.ok&&r.status!==202)throw Error(d.error||'Không chuyển được tài liệu vào AI');
+      let done=false;
+      for(let n=0;n<60&&!done;n++){
+        await new Promise(resolve=>setTimeout(resolve,2000));
+        const sr=await fetch('/api/training/status/'+encodeURIComponent(d.vectorStoreFileId));
+        const sd=await sr.json();
+        if(!sr.ok)throw Error(sd.error||'Không kiểm tra được trạng thái tài liệu');
+        if(sd.status==='completed'){o.textContent='✓ '+f.name+': Đã đưa vào kho kiến thức AI';done=true;}
+        else if(sd.status==='failed')throw Error(f.name+': '+(sd.error?.message||sd.error||'OpenAI không lập chỉ mục được tài liệu'));
+        else o.textContent='⏳ '+f.name+': đang lập chỉ mục ('+(n+1)+'/60)...';
+      }
+      if(!done)throw Error(f.name+': quá thời gian chờ lập chỉ mục. Có thể kiểm tra lại sau.');
+    }catch(e){
+      o.textContent='Lỗi: '+(e?.message||e);
+      return;
+    }
+  }
+}
 document.querySelectorAll('.nav[data-page]').forEach(b=>b.onclick=()=>go(b.dataset.page));go('home');
