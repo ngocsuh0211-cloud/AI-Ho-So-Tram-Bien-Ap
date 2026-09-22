@@ -48,16 +48,33 @@ async function uploadTraining(){
       let d={};try{d=await r.json();}catch{throw Error('Máy chủ không trả JSON khi chuyển tài liệu vào AI.');}
       if(!r.ok&&r.status!==202)throw Error(d.error||'Không chuyển được tài liệu vào AI');
       let done=false;
-      for(let n=0;n<60&&!done;n++){
-        await new Promise(resolve=>setTimeout(resolve,2000));
-        const sr=await fetch('/api/training/status/'+encodeURIComponent(d.vectorStoreFileId));
-        const sd=await sr.json();
-        if(!sr.ok)throw Error(sd.error||'Không kiểm tra được trạng thái tài liệu');
-        if(sd.status==='completed'){o.textContent='✓ '+f.name+': Đã đưa vào kho kiến thức AI';done=true;}
-        else if(sd.status==='failed')throw Error(f.name+': '+(sd.error?.message||sd.error||'OpenAI không lập chỉ mục được tài liệu'));
-        else o.textContent='⏳ '+f.name+': đang lập chỉ mục ('+(n+1)+'/60)...';
+      if(d.ocrResponseId){
+        for(let n=0;n<180&&!done;n++){
+          await new Promise(resolve=>setTimeout(resolve,3000));
+          const sr=await fetch('/api/training/ocr-status/'+encodeURIComponent(d.ocrResponseId));
+          let sd={};try{sd=await sr.json();}catch{throw Error('Máy chủ không trả JSON khi kiểm tra OCR.');}
+          if(!sr.ok)throw Error(sd.error||'OCR không hoàn tất');
+          if(sd.status==='completed'){
+            o.textContent='✓ '+f.name+': Đã OCR và đưa nội dung vào kho kiến thức AI';
+            done=true;
+          }else if(sd.status==='failed'||sd.status==='incomplete'){
+            throw Error(f.name+': '+(sd.error||'OCR không hoàn tất'));
+          }else{
+            o.textContent='⏳ '+f.name+': '+(sd.message||'AI đang đọc hồ sơ scan')+' ('+(n+1)+'/180)...';
+          }
+        }
+      }else{
+        for(let n=0;n<60&&!done;n++){
+          await new Promise(resolve=>setTimeout(resolve,2000));
+          const sr=await fetch('/api/training/status/'+encodeURIComponent(d.vectorStoreFileId));
+          const sd=await sr.json();
+          if(!sr.ok)throw Error(sd.error||'Không kiểm tra được trạng thái tài liệu');
+          if(sd.status==='completed'){o.textContent='✓ '+f.name+': Đã đưa vào kho kiến thức AI';done=true;}
+          else if(sd.status==='failed')throw Error(f.name+': '+(sd.error?.message||sd.error||'OpenAI không lập chỉ mục được tài liệu'));
+          else o.textContent='⏳ '+f.name+': đang lập chỉ mục ('+(n+1)+'/60)...';
+        }
       }
-      if(!done)throw Error(f.name+': quá thời gian chờ lập chỉ mục. Có thể kiểm tra lại sau.');
+      if(!done)throw Error(f.name+': quá thời gian chờ xử lý. Có thể kiểm tra lại sau.');
     }catch(e){
       o.textContent='Lỗi: '+(e?.message||e);
       return;
