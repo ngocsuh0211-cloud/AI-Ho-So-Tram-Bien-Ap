@@ -185,7 +185,7 @@ app.get('/api/training/status/:fileId',async(req,res)=>{
   const c=client(); if(!c) return res.status(503).json({error:'Chưa cấu hình OPENAI_API_KEY trên máy chủ.'});
   if(!store()) return res.status(503).json({error:'Chưa cấu hình OPENAI_VECTOR_STORE_ID trên máy chủ.'});
   try{
-    const f=await c.vectorStores.files.retrieve(store(),req.params.fileId);
+    const f=await c.vectorStores.files.retrieve(req.params.fileId,{vector_store_id:store()});
     res.json({ok:true,id:f.id,status:f.status,error:f.last_error||null});
   }catch(e){
     console.error('training status error',e);
