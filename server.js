@@ -119,13 +119,28 @@ app.post('/api/training/from-blob',async(req,res)=>{
   if(!store()) return res.status(503).json({error:'Chưa cấu hình OPENAI_VECTOR_STORE_ID trên máy chủ.'});
   if(!blobConfigured()) return res.status(503).json({error:'Chưa kết nối Vercel Blob với project.'});
   const {pathname,name,contentType,getUrl}=req.body||{};
-  if(!pathname||!name||!getUrl) return res.status(400).json({error:'Thiếu thông tin tài liệu tạm trong Blob.'});
+  if(!pathname||!name) return res.status(400).json({error:'Thiếu thông tin tài liệu tạm trong Blob.'});
   try{
-    const u=new URL(getUrl);
-    if(!u.hostname.endsWith('.blob.vercel-storage.com')) return res.status(400).json({error:'Đường dẫn Blob không hợp lệ.'});
-    const blobResponse=await fetch(getUrl,{cache:'no-store'});
-    if(!blobResponse.ok || !blobResponse.body) return res.status(404).json({error:'Không đọc được tài liệu tạm trong Blob. HTTP '+blobResponse.status});
-    const streamFile=toStreamingFile(blobResponse.body,name,{type:contentType||blobResponse.headers.get('content-type')||'application/octet-stream'});
+    let sourceStream=null;
+    let detectedType=contentType||'application/octet-stream';
+    if(getUrl){
+      const u=new URL(getUrl);
+      if(!u.hostname.endsWith('.blob.vercel-storage.com')) return res.status(400).json({error:'Đường dẫn Blob không hợp lệ.'});
+      const blobResponse=await fetch(getUrl,{cache:'no-store'});
+      if(blobResponse.ok && blobResponse.body){
+        sourceStream=blobResponse.body;
+        detectedType=contentType||blobResponse.headers.get('content-type')||detectedType;
+      }
+    }
+    if(!sourceStream){
+      const blobResult=await get(pathname,{access:'private',useCache:false});
+      if(!blobResult || blobResult.statusCode!==200 || !blobResult.stream){
+        return res.status(404).json({error:'Blob đã upload nhưng máy chủ không đọc được tài liệu. Hãy kiểm tra kết nối Blob/OIDC.'});
+      }
+      sourceStream=blobResult.stream;
+      detectedType=contentType||blobResult.blob.contentType||detectedType;
+    }
+    const streamFile=toStreamingFile(sourceStream,name,{type:detectedType});
     const up=await c.files.create({file:streamFile,purpose:'assistants'});
     const vsFile=await c.vectorStores.files.create(store(),{file_id:up.id});
     res.status(202).json({
