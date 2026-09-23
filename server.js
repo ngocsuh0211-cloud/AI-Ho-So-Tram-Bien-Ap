@@ -356,5 +356,119 @@ app.get('/api/training/status/:fileId',async(req,res)=>{
   }
 });
 
+
+// =========================
+// AI WORKFLOW TRAINING V1
+// Stored as structured lessons in private Vercel Blob.
+// This is the reusable method layer; it is intentionally separate from project files.
+// =========================
+const WORKFLOW_INDEX='training/workflows/index.json';
+
+async function readBlobJson(pathname,fallback){
+  try{
+    const b=await get(pathname,{access:'private',useCache:false});
+    if(!b || b.statusCode!==200 || !b.stream) return fallback;
+    const chunks=[]; for await(const c of b.stream) chunks.push(Buffer.from(c));
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  }catch{return fallback;}
+}
+async function writeBlobJson(pathname,value){
+  if(!blobConfigured()) throw Error('Chưa kết nối Vercel Blob với project.');
+  await put(pathname,JSON.stringify(value,null,2),{
+    access:'private',contentType:'application/json',addRandomSuffix:false,overwrite:true
+  });
+}
+function cleanWorkflow(w){
+  return {
+    id:String(w.id||''),
+    title:String(w.title||'').trim(),
+    goal:String(w.goal||'').trim(),
+    version:Number(w.version||1),
+    updatedAt:w.updatedAt||new Date().toISOString(),
+    steps:Array.isArray(w.steps)?w.steps.map((s,i)=>({
+      order:i+1,title:String(s.title||'').trim(),action:String(s.action||'').trim(),
+      input:String(s.input||'').trim(),rule:String(s.rule||'').trim(),
+      check:String(s.check||'').trim(),unknown:String(s.unknown||'').trim()
+    })):[]
+  };
+}
+
+app.get('/api/workflows',async(req,res)=>{
+  try{
+    const data=await readBlobJson(WORKFLOW_INDEX,{workflows:[]});
+    res.json({ok:true,workflows:Array.isArray(data.workflows)?data.workflows:[]});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.get('/api/workflows/:id',async(req,res)=>{
+  try{
+    const data=await readBlobJson(WORKFLOW_INDEX,{workflows:[]});
+    const w=(data.workflows||[]).find(x=>x.id===req.params.id);
+    if(!w)return res.status(404).json({error:'Không tìm thấy quy trình.'});
+    res.json({ok:true,workflow:w});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/workflows',async(req,res)=>{
+  try{
+    const title=String(req.body?.title||'').trim();
+    if(!title)return res.status(400).json({error:'Thiếu tên quy trình.'});
+    const data=await readBlobJson(WORKFLOW_INDEX,{workflows:[]});
+    const id='wf_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
+    const w=cleanWorkflow({id,title,goal:req.body?.goal,steps:[],version:1});
+    data.workflows=[...(data.workflows||[]),w];
+    await writeBlobJson(WORKFLOW_INDEX,data);
+    res.status(201).json({ok:true,workflow:w});
+  }catch(e){console.error('workflow create error',e);res.status(500).json({error:e.message});}
+});
+
+app.put('/api/workflows/:id',async(req,res)=>{
+  try{
+    const data=await readBlobJson(WORKFLOW_INDEX,{workflows:[]});
+    const i=(data.workflows||[]).findIndex(x=>x.id===req.params.id);
+    if(i<0)return res.status(404).json({error:'Không tìm thấy quy trình.'});
+    const previous=data.workflows[i];
+    const w=cleanWorkflow({...previous,...req.body,id:previous.id,version:Number(previous.version||1)+1,updatedAt:new Date().toISOString()});
+    data.workflows[i]=w;
+    await writeBlobJson(WORKFLOW_INDEX,data);
+    res.json({ok:true,workflow:w});
+  }catch(e){console.error('workflow update error',e);res.status(500).json({error:e.message});}
+});
+
+app.delete('/api/workflows/:id',async(req,res)=>{
+  try{
+    const data=await readBlobJson(WORKFLOW_INDEX,{workflows:[]});
+    const before=data.workflows||[], after=before.filter(x=>x.id!==req.params.id);
+    if(after.length===before.length)return res.status(404).json({error:'Không tìm thấy quy trình.'});
+    data.workflows=after; await writeBlobJson(WORKFLOW_INDEX,data);
+    res.json({ok:true});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Execution endpoint: converts a taught workflow into a deterministic execution plan.
+// When an AI model is available it can be connected here; without paid AI credits the
+// training system still works and preserves the user's method instead of pretending it executed.
+app.post('/api/workflows/:id/execute',async(req,res)=>{
+  try{
+    const data=await readBlobJson(WORKFLOW_INDEX,{workflows:[]});
+    const w=(data.workflows||[]).find(x=>x.id===req.params.id);
+    if(!w)return res.status(404).json({error:'Không tìm thấy quy trình.'});
+    if(!w.steps?.length)return res.status(400).json({error:'Quy trình chưa có bước nào.'});
+    const project=String(req.body?.project||'').trim();
+    const files=Array.isArray(req.body?.files)?req.body.files:[];
+    res.json({
+      ok:true,mode:process.env.OPENAI_API_KEY?'ai-ready':'training-only',
+      workflow:{id:w.id,title:w.title,version:w.version},
+      project,files,
+      plan:w.steps.map(s=>({
+        order:s.order,title:s.title,
+        instruction:s.action,inputSources:s.input,decisionRule:s.rule,
+        validation:s.check,unknownCase:s.unknown,status:'CHƯA THỰC HIỆN'
+      })),
+      next:'Cần kết nối bộ máy AI/file-operations để thực thi các bước và xuất Word/Excel/PDF; quy trình đã được lưu độc lập và sẵn sàng cho lớp thực thi.'
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.get(/.*/, (req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 export default app;
