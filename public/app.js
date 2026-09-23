@@ -16,34 +16,73 @@ function bind(){document.querySelectorAll('.projectBtn').forEach(b=>b.onclick=()
 async function send(){const i=document.getElementById('msg');if(!i.value.trim())return;const q=i.value.trim(),m=document.getElementById('messages');m.innerHTML+=`<div class="bubble me">${esc(q)}</div><div class="bubble ai" id="typing">Đang xử lý...</div>`;i.value='';try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:q,project:currentProject,history})});const d=await r.json();document.getElementById('typing')?.remove();if(!r.ok)throw Error(d.error||'Lỗi API');m.innerHTML+=`<div class="bubble ai"><b>AI Hồ sơ</b><br>${esc(d.text).replace(/\\n/g,'<br>')}</div>`;history.push({role:'user',content:q},{role:'assistant',content:d.text});}catch(e){document.getElementById('typing')?.remove();m.innerHTML+=`<div class="bubble ai"><b>Lỗi:</b> ${esc(e.message)}</div>`;}}
 async function loadWorkflows(){
   const el=document.getElementById('workflowList'); if(!el)return;
-  try{const r=await fetch('/api/workflows');const d=await r.json();if(!r.ok)throw Error(d.error||'Không tải được quy trình');
+  try{
+    const r=await fetch('/api/workflows'); const d=await r.json();
+    if(!r.ok)throw Error(d.error||'Không tải được quy trình');
     if(!d.workflows?.length){el.innerHTML='<span>Chưa có quy trình. Hãy tạo quy trình đầu tiên.</span>';return;}
-    el.innerHTML=d.workflows.map(w=>'<div class="workflow-row"><button class="btn light" onclick="editWorkflow(\\''+w.id+'\\')">'+esc(w.title)+'</button><span class="muted">'+(w.steps?.length||0)+' bước</span></div>').join('');
+    el.innerHTML=d.workflows.map(w=>`<div class="workflow-row"><button class="btn light" onclick="editWorkflow('${esc(w.id)}')">${esc(w.title)}</button><span class="muted">${w.steps?.length||0} bước</span></div>`).join('');
   }catch(e){el.textContent='Lỗi: '+e.message;}
 }
 async function createWorkflow(){
-  const title=document.getElementById('wfTitle')?.value.trim(), goal=document.getElementById('wfGoal')?.value.trim(), out=document.getElementById('wfResult');
+  const title=document.getElementById('wfTitle')?.value.trim();
+  const goal=document.getElementById('wfGoal')?.value.trim();
+  const out=document.getElementById('wfResult');
   if(!title){out.textContent='Hãy nhập tên quy trình.';return;}
-  try{const r=await fetch('/api/workflows',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,goal,steps:[]})});const d=await r.json();if(!r.ok)throw Error(d.error||'Không tạo được');
-    out.textContent='✓ Đã lưu quy trình. Bây giờ thêm từng bước.'; await loadWorkflows(); await editWorkflow(d.workflow.id);
+  try{
+    const r=await fetch('/api/workflows',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,goal,steps:[]})});
+    const d=await r.json(); if(!r.ok)throw Error(d.error||'Không tạo được');
+    out.textContent='✓ Đã lưu quy trình. Bây giờ thêm từng bước.';
+    await loadWorkflows(); await editWorkflow(d.workflow.id);
   }catch(e){out.textContent='Lỗi: '+e.message;}
 }
 async function editWorkflow(id){
   const box=document.getElementById('workflowEditor'); if(!box)return;
-  try{const r=await fetch('/api/workflows/'+encodeURIComponent(id));const d=await r.json();if(!r.ok)throw Error(d.error||'Không tải được');
+  try{
+    const r=await fetch('/api/workflows/'+encodeURIComponent(id)); const d=await r.json();
+    if(!r.ok)throw Error(d.error||'Không tải được');
     const w=d.workflow;
-    box.innerHTML='<div class="workflow-head"><div><h3>'+esc(w.title)+'</h3><p class="muted">'+esc(w.goal||'')+'</p></div><button class="btn gold" onclick="addStep(\\''+w.id+'\\')">＋ Thêm bước</button></div><div id="steps">'+(w.steps||[]).map((s,i)=>stepHtml(w,i,s)).join('')+'</div><button class="btn light" onclick="saveWorkflow(\\''+w.id+'\\')">💾 Lưu toàn bộ quy trình</button><span id="saveMsg" class="muted"></span>';
+    box.innerHTML=`
+      <div class="workflow-head"><div><h3>${esc(w.title)}</h3><p class="muted">${esc(w.goal||'')}</p></div>
+      <button class="btn gold" onclick="addStep()">＋ Thêm bước</button></div>
+      <div id="steps">${(w.steps||[]).map((s,i)=>stepHtml(i,s)).join('')}</div>
+      <button class="btn light" onclick="saveWorkflow('${esc(w.id)}')">💾 Lưu toàn bộ quy trình</button>
+      <span id="saveMsg" class="muted"></span>`;
   }catch(e){box.textContent='Lỗi: '+e.message;}
 }
-function stepHtml(w,i,s){return '<div class="step card" data-step="'+i+'"><div class="step-title"><b>Bước '+(i+1)+'</b><button class="btn danger" onclick="removeStep('+i+')">Xóa</button></div><input class="field s-title" value="'+esc(s.title||'')+'" placeholder="Tên bước"><textarea class="field s-action" rows="4" placeholder="AI phải thực hiện việc gì?">'+esc(s.action||'')+'</textarea><textarea class="field s-input" rows="3" placeholder="Dữ liệu/file nào cần đọc, lấy thông tin ở đâu?">'+esc(s.input||'')+'</textarea><textarea class="field s-rule" rows="3" placeholder="Điều kiện / If-Then / cách quyết định">'+esc(s.rule||'')+'</textarea><textarea class="field s-check" rows="3" placeholder="Kiểm tra kết quả như thế nào?">'+esc(s.check||'')+'</textarea><textarea class="field s-unknown" rows="2" placeholder="Nếu gặp trường hợp chưa được dạy, AI phải hỏi gì?">'+esc(s.unknown||'')+'</textarea></div>'}
-function addStep(){const steps=document.querySelectorAll('#steps .step');const box=document.getElementById('steps');const n=steps.length;box.insertAdjacentHTML('beforeend',stepHtml({},n,{title:'',action:'',input:'',rule:'',check:'',unknown:''}));}
-function removeStep(i){document.querySelector('[data-step="'+i+'"]')?.remove();document.querySelectorAll('#steps .step').forEach((x,n)=>{x.dataset.step=n;x.querySelector('.step-title b').textContent='Bước '+(n+1);});}
+function stepHtml(i,s){
+  return `<div class="step card" data-step="${i}">
+    <div class="step-title"><b>Bước ${i+1}</b><button class="btn danger" onclick="removeStep(${i})">Xóa</button></div>
+    <input class="field s-title" value="${esc(s.title||'')}" placeholder="Tên bước">
+    <textarea class="field s-action" rows="4" placeholder="AI phải thực hiện việc gì?">${esc(s.action||'')}</textarea>
+    <textarea class="field s-input" rows="3" placeholder="Dữ liệu/file nào cần đọc, lấy thông tin ở đâu?">${esc(s.input||'')}</textarea>
+    <textarea class="field s-rule" rows="3" placeholder="Điều kiện / If-Then / cách quyết định">${esc(s.rule||'')}</textarea>
+    <textarea class="field s-check" rows="3" placeholder="Kiểm tra kết quả như thế nào?">${esc(s.check||'')}</textarea>
+    <textarea class="field s-unknown" rows="2" placeholder="Nếu gặp trường hợp chưa được dạy, AI phải hỏi gì?">${esc(s.unknown||'')}</textarea>
+  </div>`;
+}
+function addStep(){
+  const box=document.getElementById('steps'); if(!box)return;
+  const n=box.querySelectorAll('.step').length;
+  box.insertAdjacentHTML('beforeend',stepHtml(n,{title:'',action:'',input:'',rule:'',check:'',unknown:''}));
+}
+function removeStep(i){
+  document.querySelector('[data-step="'+i+'"]')?.remove();
+  document.querySelectorAll('#steps .step').forEach((x,n)=>{x.dataset.step=n;x.querySelector('.step-title b').textContent='Bước '+(n+1);});
+}
 async function saveWorkflow(id){
-  const r0=await fetch('/api/workflows/'+encodeURIComponent(id));const d0=await r0.json();if(!r0.ok)throw Error(d0.error||'Không tải được');
-  const steps=[...document.querySelectorAll('#steps .step')].map((el,i)=>({order:i+1,title:el.querySelector('.s-title').value,action:el.querySelector('.s-action').value,input:el.querySelector('.s-input').value,rule:el.querySelector('.s-rule').value,check:el.querySelector('.s-check').value,unknown:el.querySelector('.s-unknown').value}));
-  const w={...d0.workflow,steps};
-  const r=await fetch('/api/workflows/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(w)});const d=await r.json();if(!r.ok)throw Error(d.error||'Không lưu được');
-  document.getElementById('saveMsg').textContent=' ✓ Đã lưu '+new Date().toLocaleTimeString('vi-VN');loadWorkflows();
+  try{
+    const r0=await fetch('/api/workflows/'+encodeURIComponent(id)); const d0=await r0.json();
+    if(!r0.ok)throw Error(d0.error||'Không tải được');
+    const steps=[...document.querySelectorAll('#steps .step')].map((el,i)=>({
+      order:i+1,title:el.querySelector('.s-title').value,action:el.querySelector('.s-action').value,
+      input:el.querySelector('.s-input').value,rule:el.querySelector('.s-rule').value,
+      check:el.querySelector('.s-check').value,unknown:el.querySelector('.s-unknown').value
+    }));
+    const r=await fetch('/api/workflows/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...d0.workflow,steps})});
+    const d=await r.json(); if(!r.ok)throw Error(d.error||'Không lưu được');
+    document.getElementById('saveMsg').textContent=' ✓ Đã lưu '+new Date().toLocaleTimeString('vi-VN');
+    loadWorkflows();
+  }catch(e){const m=document.getElementById('saveMsg');if(m)m.textContent=' Lỗi: '+e.message;}
 }
 async function setupVectorStore(){const o=document.getElementById('storeResult');o.textContent='Đang khởi tạo...';try{const r=await fetch('/api/setup/vector-store',{method:'POST'}),d=await r.json();if(!r.ok)throw Error(d.error||'Không tạo được kho');o.textContent='Đã tạo kho. ID: '+d.vectorStoreId+' — hãy thêm ID này vào Vercel với tên OPENAI_VECTOR_STORE_ID rồi Redeploy.';}catch(e){o.textContent='Lỗi: '+e.message;}}
 let blobClientPromise;
