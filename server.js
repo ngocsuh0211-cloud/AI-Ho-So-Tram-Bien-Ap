@@ -119,7 +119,7 @@ app.post('/api/training/from-blob',async(req,res)=>{
   if(!c) return res.status(503).json({error:'Chưa cấu hình OPENAI_API_KEY trên máy chủ.'});
   if(!store()) return res.status(503).json({error:'Chưa cấu hình OPENAI_VECTOR_STORE_ID trên máy chủ.'});
   if(!blobConfigured()) return res.status(503).json({error:'Chưa kết nối Vercel Blob với project.'});
-  const {pathname,name,contentType,getUrl}=req.body||{};
+  const {pathname,name,contentType,getUrl,pageStart,pageEnd,sourceName}=req.body||{};
   if(!pathname||!name) return res.status(400).json({error:'Thiếu thông tin tài liệu tạm trong Blob.'});
   try{
     let sourceStream=null;
@@ -149,11 +149,17 @@ app.post('/api/training/from-blob',async(req,res)=>{
     const vsFile=await c.vectorStores.files.create(store(),{file_id:up.id});
 
     if((detectedType||'').toLowerCase()==='application/pdf' || /\\.pdf$/i.test(name)){
+      const originalPageStart=Number.isFinite(Number(pageStart))?Number(pageStart):1;
+      const originalPageEnd=Number.isFinite(Number(pageEnd))?Number(pageEnd):null;
+      const sourceLabel=sourceName||name;
       const ocr=await c.responses.create({
         model:MODEL,
         background:true,
         metadata:{
           source_filename:name,
+          source_name:sourceLabel,
+          source_page_start:String(originalPageStart),
+          source_page_end:String(originalPageEnd||''),
           source_file_id:up.id,
           source_vector_store_file_id:vsFile.id,
           vector_store_id:store()
@@ -162,8 +168,9 @@ app.post('/api/training/from-blob',async(req,res)=>{
           'Bạn là bộ phận OCR và trích xuất hồ sơ kỹ thuật. ' +
           'Đọc trực tiếp toàn bộ PDF, kể cả các trang scan/hình ảnh. ' +
           'Không tóm tắt và không suy diễn. Trích xuất tối đa nội dung có thể đọc được, ' +
+          'Đây là phần từ trang '+originalPageStart+(originalPageEnd?' đến trang '+originalPageEnd:'')+' của hồ sơ gốc '+sourceLabel+'. ' +
           'giữ nguyên tiếng Việt, số liệu, ngày tháng, mã hiệu, tên người/tổ chức, tiêu đề, ' +
-          'bảng biểu và các mục của hồ sơ. Mỗi trang phải bắt đầu bằng [TRANG N] để giữ vị trí. ' +
+          'bảng biểu và các mục của hồ sơ. Mỗi trang phải bắt đầu bằng [TRANG N] với N là số trang gốc để giữ vị trí. ' +
           'Nếu một trang không đọc được, ghi [TRANG N - KHÔNG ĐỌC ĐƯỢC]. ' +
           'Không tự điền phần bị mờ hoặc thiếu.',
         input:[{
